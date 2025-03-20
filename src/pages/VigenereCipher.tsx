@@ -38,6 +38,10 @@ const COMMON_LETTERS = ['E', 'T', 'A', 'O', 'I', 'N', 'S', 'H', 'R', 'D', 'L', '
 // Average Index of Coincidence for English text is around 0.067
 const ENGLISH_IOC = 0.067;
 
+// Sample ciphertext for demonstration
+const SAMPLE_CIPHERTEXT = "KQOWEFVJPUJUUNUKGLMEKJINMWUXFQMKJBGWRLFNFGHUDWUUMBSVLPSNCMUEKQCTEQLFNFGLUDWUUZHKCE";
+const SAMPLE_KEY = "CIPHER";
+
 const VigenereCipher = () => {
   const { toast } = useToast();
   const [ciphertext, setCiphertext] = useState("");
@@ -51,6 +55,73 @@ const VigenereCipher = () => {
   const [frequencies, setFrequencies] = useState<{[key: string]: {[key: string]: number}}>({}); 
   const [possibleKeyLengths, setPossibleKeyLengths] = useState<{length: number, ioc: number}[]>([]);
   const [bestKeys, setBestKeys] = useState<{length: number, key: string, score: number}[]>([]);
+  const [plaintext, setPlaintext] = useState("");  // For encryption demo
+  const [encryptKey, setEncryptKey] = useState(""); // For encryption demo
+  const [encryptedText, setEncryptedText] = useState(""); // For encryption demo
+  const [showEncryptionDemo, setShowEncryptionDemo] = useState(false);
+
+  // Vigenere encrypt function
+  const encrypt = (plaintext: string, key: string): string => {
+    let result = '';
+    const normalizedPlaintext = plaintext.toUpperCase().replace(/[^A-Z]/g, '');
+    const normalizedKey = key.toUpperCase().replace(/[^A-Z]/g, '');
+    
+    if (normalizedKey.length === 0) return plaintext;
+    
+    for (let i = 0; i < normalizedPlaintext.length; i++) {
+      const charCode = normalizedPlaintext.charCodeAt(i);
+      
+      if (charCode >= 65 && charCode <= 90) {
+        const keyChar = normalizedKey.charCodeAt(i % normalizedKey.length) - 65;
+        const encryptedChar = String.fromCharCode(((charCode - 65 + keyChar) % 26) + 65);
+        result += encryptedChar;
+      } else {
+        result += normalizedPlaintext[i];
+      }
+    }
+    
+    return result;
+  };
+
+  // Load sample data
+  const loadSample = () => {
+    setCiphertext(SAMPLE_CIPHERTEXT);
+    toast({
+      title: "Sample Loaded",
+      description: `This text was encrypted with the key "${SAMPLE_KEY}"`,
+    });
+  };
+
+  // Generate a test encrypted message
+  const handleEncrypt = () => {
+    if (!plaintext || !encryptKey) {
+      toast({
+        title: "Encryption Failed",
+        description: "Please provide both plaintext and key",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    const encrypted = encrypt(plaintext, encryptKey);
+    setEncryptedText(encrypted);
+    
+    toast({
+      title: "Text Encrypted",
+      description: `Successfully encrypted with key "${encryptKey.toUpperCase()}"`,
+    });
+  };
+
+  // Copy the encrypted text to input
+  const useEncryptedText = () => {
+    setCiphertext(encryptedText);
+    setShowEncryptionDemo(false);
+    
+    toast({
+      title: "Text Copied",
+      description: "Encrypted text moved to analysis input",
+    });
+  };
 
   // Step 1: Find repeated sequences (Kasiski Examination)
   const findRepeatedSequences = () => {
@@ -158,14 +229,14 @@ const VigenereCipher = () => {
       
       // If we couldn't find candidates, try common key lengths
       if (candidates.length === 0) {
-        candidates.push(5, 6, 7);
+        candidates.push(3, 4, 5, 6, 7);
       }
       
       // Try multiple key lengths and find the best keys
       const keyResults: {length: number, key: string, score: number}[] = [];
       
       for (const length of candidates) {
-        const result = attemptKeyRecovery(cleanCiphertext, length);
+        const result = improvedKeyRecovery(cleanCiphertext, length);
         keyResults.push({
           length,
           key: result.key,
@@ -173,8 +244,8 @@ const VigenereCipher = () => {
         });
       }
       
-      // Sort by score (lower is better)
-      keyResults.sort((a, b) => a.score - b.score);
+      // Sort by score (higher is better)
+      keyResults.sort((a, b) => b.score - a.score);
       setBestKeys(keyResults);
       
       // Select the best key length
@@ -259,8 +330,8 @@ const VigenereCipher = () => {
     return length <= 1 ? 0 : sum / (length * (length - 1));
   };
 
-  // Attempt key recovery for a specific key length
-  const attemptKeyRecovery = (text: string, keyLength: number) => {
+  // Improved key recovery using chi-squared statistic
+  const improvedKeyRecovery = (text: string, keyLength: number) => {
     // Group characters by position modulo key length
     const groups: string[] = Array(keyLength).fill('');
     
@@ -269,63 +340,145 @@ const VigenereCipher = () => {
       groups[groupIndex] += text[i];
     }
     
-    // For each group, find the best shift
+    // For each group, find the best shift using chi-squared statistic
     const key: string[] = [];
     let totalScore = 0;
     
     for (const group of groups) {
-      const { shift, score } = findBestShift(group);
-      key.push(String.fromCharCode(65 + (26 - shift) % 26));
+      const { shift, score } = findBestShiftChiSquared(group);
+      key.push(String.fromCharCode(65 + shift));
       totalScore += score;
     }
     
+    // Calculate decryption fitness on a sample of text
+    const sampleText = text.substring(0, Math.min(100, text.length));
+    const decrypted = decrypt(sampleText, key.join(''));
+    const textScore = scoreEnglishText(decrypted);
+    
     return {
       key: key.join(''),
-      score: totalScore / keyLength  // Normalize score by key length
+      score: textScore  // Higher score is better
     };
   };
   
-  // Find the best Caesar shift for a given text by comparing to English frequencies
-  const findBestShift = (text: string) => {
-    // Get letter frequencies in the text
-    const freqs: number[] = Array(26).fill(0);
-    
+  // Find the best shift using Chi-squared statistic
+  const findBestShiftChiSquared = (text: string) => {
+    // Get letter counts in the text
+    const observed: number[] = Array(26).fill(0);
     for (let i = 0; i < text.length; i++) {
       const charCode = text.charCodeAt(i) - 65;
       if (charCode >= 0 && charCode < 26) {
-        freqs[charCode]++;
+        observed[charCode]++;
       }
     }
     
-    // Convert to probabilities
+    // Calculate expected counts based on English letter frequencies
+    const expected: number[] = Array(26).fill(0);
     for (let i = 0; i < 26; i++) {
-      freqs[i] = freqs[i] / text.length;
+      const letter = String.fromCharCode(65 + i);
+      expected[i] = text.length * ENGLISH_FREQUENCIES[letter as keyof typeof ENGLISH_FREQUENCIES];
     }
     
-    // Try each shift and measure the correlation with English letter frequencies
+    // Try each shift and calculate chi-squared statistic
     let bestShift = 0;
-    let bestScore = -Infinity;
+    let lowestChiSquared = Infinity;
     
     for (let shift = 0; shift < 26; shift++) {
-      let correlation = 0;
+      let chiSquared = 0;
       
       for (let i = 0; i < 26; i++) {
-        const englishChar = String.fromCharCode(65 + i);
-        const cipherIndex = (i + shift) % 26;
-        
-        const englishFreq = ENGLISH_FREQUENCIES[englishChar as keyof typeof ENGLISH_FREQUENCIES];
-        const cipherFreq = freqs[cipherIndex];
-        
-        correlation += englishFreq * cipherFreq;
+        const shiftedIndex = (i + shift) % 26;
+        const diff = observed[i] - expected[shiftedIndex];
+        // Avoid division by zero
+        if (expected[shiftedIndex] > 0) {
+          chiSquared += (diff * diff) / expected[shiftedIndex];
+        }
       }
       
-      if (correlation > bestScore) {
-        bestScore = correlation;
+      if (chiSquared < lowestChiSquared) {
+        lowestChiSquared = chiSquared;
         bestShift = shift;
       }
     }
     
-    return { shift: bestShift, score: bestScore };
+    return { shift: bestShift, score: 1 / (1 + lowestChiSquared) };  // Lower chi-squared is better
+  };
+
+  // Score English text based on n-gram frequencies and word patterns
+  const scoreEnglishText = (text: string): number => {
+    let score = 0;
+    
+    // Score based on common English letter frequencies
+    const letterFreq: {[key: string]: number} = {};
+    let totalLetters = 0;
+    
+    for (const char of text) {
+      if (char >= 'A' && char <= 'Z') {
+        letterFreq[char] = (letterFreq[char] || 0) + 1;
+        totalLetters++;
+      }
+    }
+    
+    if (totalLetters === 0) return 0;
+    
+    // Score based on frequency of common English letters
+    for (const letter of COMMON_LETTERS) {
+      const freq = (letterFreq[letter] || 0) / totalLetters;
+      if (letter === 'E' || letter === 'T') {
+        score += freq * 2;  // Give more weight to E and T
+      } else {
+        score += freq;
+      }
+    }
+    
+    // Penalize uncommon letters
+    const uncommonLetters = ['J', 'Q', 'X', 'Z'];
+    for (const letter of uncommonLetters) {
+      const freq = (letterFreq[letter] || 0) / totalLetters;
+      score -= freq * 3;  // Penalize high frequency of uncommon letters
+    }
+    
+    // Score based on common digrams (letter pairs)
+    const commonDigrams = ['TH', 'HE', 'IN', 'ER', 'AN', 'RE'];
+    for (let i = 0; i < text.length - 1; i++) {
+      const digram = text.substring(i, i + 2);
+      if (commonDigrams.includes(digram)) {
+        score += 0.5;
+      }
+    }
+    
+    // Score based on vowel-consonant patterns
+    const vowels = ['A', 'E', 'I', 'O', 'U'];
+    let vowelCount = 0;
+    let consonantCount = 0;
+    let alternationCount = 0;
+    let prevIsVowel = false;
+    
+    for (const char of text) {
+      if (char < 'A' || char > 'Z') continue;
+      
+      const isVowel = vowels.includes(char);
+      if (isVowel) {
+        vowelCount++;
+      } else {
+        consonantCount++;
+      }
+      
+      if ((isVowel && !prevIsVowel) || (!isVowel && prevIsVowel)) {
+        alternationCount++;
+      }
+      
+      prevIsVowel = isVowel;
+    }
+    
+    // English typically has around 40% vowels
+    const vowelRatio = vowelCount / (vowelCount + consonantCount);
+    score += (1 - Math.abs(vowelRatio - 0.4)) * 3;
+    
+    // Alternation between vowels and consonants is common
+    score += alternationCount / text.length * 2;
+    
+    return score;
   };
 
   // Handle selection of a key length
@@ -373,12 +526,54 @@ const VigenereCipher = () => {
     const decrypted = decrypt(cleanCiphertext, bestKey);
     setDecryptedText(decrypted);
     
+    // Try a few variations of the key to see if we get better results
+    const keyVariations: string[] = [];
+    const baseKey = bestKey.split('');
+    
+    // Generate some variations of the key by changing each position
+    for (let i = 0; i < baseKey.length; i++) {
+      const currentChar = baseKey[i].charCodeAt(0) - 65;
+      
+      // Try nearby characters
+      for (let offset of [-1, 1, -2, 2]) {
+        const newChar = ((currentChar + offset + 26) % 26) + 65;
+        const newKeyArray = [...baseKey];
+        newKeyArray[i] = String.fromCharCode(newChar);
+        const newKey = newKeyArray.join('');
+        
+        const decryptedVariation = decrypt(cleanCiphertext, newKey);
+        const score = scoreEnglishText(decryptedVariation);
+        
+        keyVariations.push(newKey);
+      }
+    }
+    
+    // Try each variation
+    let bestVariation = bestKey;
+    let bestScore = scoreEnglishText(decrypted);
+    
+    for (const variation of keyVariations) {
+      const decryptedVariation = decrypt(cleanCiphertext, variation);
+      const score = scoreEnglishText(decryptedVariation);
+      
+      if (score > bestScore) {
+        bestScore = score;
+        bestVariation = variation;
+      }
+    }
+    
+    // If we found a better key, use it
+    if (bestVariation !== bestKey) {
+      setRecoveredKey(bestVariation);
+      setDecryptedText(decrypt(cleanCiphertext, bestVariation));
+    }
+    
     setTimeout(() => {
       setLoading(false);
       setStep(3);
       toast({
         title: "Analysis Complete",
-        description: `Recovered key: ${bestKey}`,
+        description: `Recovered key: ${recoveredKey}`,
       });
     }, 1000);
   };
@@ -470,6 +665,60 @@ const VigenereCipher = () => {
               >
                 Reset
               </Button>
+              <Button 
+                variant="outline" 
+                onClick={loadSample}
+                disabled={loading}
+              >
+                Load Sample
+              </Button>
+            </div>
+            
+            <div className="mt-4">
+              <Button 
+                variant="link" 
+                onClick={() => setShowEncryptionDemo(!showEncryptionDemo)}
+                className="p-0 h-auto"
+              >
+                {showEncryptionDemo ? "Hide Encryption Tool" : "Create Your Own Cipher"}
+              </Button>
+              
+              {showEncryptionDemo && (
+                <div className="mt-2 p-4 border rounded-md">
+                  <h3 className="text-sm font-medium mb-2">Encryption Tool</h3>
+                  <div className="space-y-3">
+                    <div>
+                      <Input
+                        placeholder="Enter plaintext to encrypt..."
+                        value={plaintext}
+                        onChange={(e) => setPlaintext(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <Input
+                        placeholder="Enter encryption key..."
+                        value={encryptKey}
+                        onChange={(e) => setEncryptKey(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" onClick={handleEncrypt}>
+                        Encrypt
+                      </Button>
+                      {encryptedText && (
+                        <Button size="sm" variant="outline" onClick={useEncryptedText}>
+                          Use This Text
+                        </Button>
+                      )}
+                    </div>
+                    {encryptedText && (
+                      <div className="p-2 bg-gray-50 rounded border text-sm font-mono break-all">
+                        {encryptedText}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

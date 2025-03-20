@@ -1,4 +1,3 @@
-
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,6 +7,19 @@ import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
 import { Shield, ArrowRight, CheckCircle2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+
+// English letter frequency reference
+const ENGLISH_FREQUENCIES = {
+  'A': 0.082, 'B': 0.015, 'C': 0.028, 'D': 0.043, 'E': 0.127, 
+  'F': 0.022, 'G': 0.020, 'H': 0.061, 'I': 0.070, 'J': 0.002, 
+  'K': 0.008, 'L': 0.040, 'M': 0.024, 'N': 0.067, 'O': 0.075, 
+  'P': 0.019, 'Q': 0.001, 'R': 0.060, 'S': 0.063, 'T': 0.091, 
+  'U': 0.028, 'V': 0.010, 'W': 0.023, 'X': 0.001, 'Y': 0.020, 
+  'Z': 0.001
+};
+
+// Average Index of Coincidence for English text is around 0.067
+const ENGLISH_IOC = 0.067;
 
 const VigenereCipher = () => {
   const { toast } = useToast();
@@ -20,6 +32,7 @@ const VigenereCipher = () => {
   const [step, setStep] = useState(1);
   const [repeats, setRepeats] = useState<{text: string, positions: number[], distance: number}[]>([]);
   const [frequencies, setFrequencies] = useState<{[key: string]: {[key: string]: number}}>({}); 
+  const [possibleKeyLengths, setPossibleKeyLengths] = useState<{length: number, ioc: number}[]>([]);
 
   // Step 1: Find repeated sequences (Kasiski Examination)
   const findRepeatedSequences = () => {
@@ -27,13 +40,17 @@ const VigenereCipher = () => {
     setStep(1);
     setShowSteps(true);
     setRepeats([]);
+    setPossibleKeyLengths([]);
+    
+    // Clean the ciphertext (remove spaces and non-alphabetic characters)
+    const cleanCiphertext = ciphertext.toUpperCase().replace(/[^A-Z]/g, '');
     
     const repeatedSequences: {[key: string]: number[]} = {};
     
     // Look for sequences of length 3 or more
     for (let len = 3; len <= 5; len++) {
-      for (let i = 0; i <= ciphertext.length - len; i++) {
-        const sequence = ciphertext.substring(i, i + len);
+      for (let i = 0; i <= cleanCiphertext.length - len; i++) {
+        const sequence = cleanCiphertext.substring(i, i + len);
         if (!repeatedSequences[sequence]) {
           repeatedSequences[sequence] = [];
         }
@@ -46,7 +63,7 @@ const VigenereCipher = () => {
     
     for (const [seq, positions] of Object.entries(repeatedSequences)) {
       if (positions.length >= 2) {
-        // Calculate the distances between occurrences
+        // Calculate all distances between occurrences
         const distances: number[] = [];
         for (let i = 1; i < positions.length; i++) {
           distances.push(positions[i] - positions[i-1]);
@@ -68,22 +85,105 @@ const VigenereCipher = () => {
     const topRepeats = significantRepeats.slice(0, 10);
     setRepeats(topRepeats);
     
+    // Calculate Index of Coincidence for different key lengths
+    calculateIoC(cleanCiphertext);
+    
     setTimeout(() => {
       setLoading(false);
       setStep(2);
       
-      // Find potential key length from the GCD of distances
+      // Find potential key length from both methods
       const distances = topRepeats.map(r => r.distance);
-      let possibleKeyLength = findGCD(distances);
+      const factorCount: {[key: number]: number} = {};
       
-      if (possibleKeyLength < 2) possibleKeyLength = distances[0];
-      setKeyLength(possibleKeyLength);
+      // Count common factors of distances
+      for (const distance of distances) {
+        for (let i = 2; i <= 20; i++) {
+          if (distance % i === 0) {
+            factorCount[i] = (factorCount[i] || 0) + 1;
+          }
+        }
+      }
+      
+      // Get key length candidates from Kasiski method
+      const kasiskiCandidates = Object.entries(factorCount)
+        .map(([factor, count]) => ({
+          length: parseInt(factor),
+          count: count
+        }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 3)
+        .map(c => c.length);
+      
+      // Get key length candidates from IoC method
+      const iocCandidates = possibleKeyLengths
+        .slice(0, 5)
+        .map(c => c.length);
+      
+      // Combine candidates and take the most likely one
+      const allCandidates = [...kasiskiCandidates, ...iocCandidates];
+      const bestKeyLength = allCandidates.length > 0 ? 
+        allCandidates.reduce((a, b) => 
+          allCandidates.filter(v => v === a).length >= allCandidates.filter(v => v === b).length ? a : b
+        ) : 5;  // Default to 5 if no candidates found
+      
+      setKeyLength(bestKeyLength);
       
       toast({
-        title: "Kasiski Examination Complete",
-        description: `Estimated key length: ${possibleKeyLength}`,
+        title: "Analysis Complete",
+        description: `Estimated key length: ${bestKeyLength}`,
       });
     }, 1500);
+  };
+  
+  // Calculate Index of Coincidence for different key lengths
+  const calculateIoC = (text: string) => {
+    const results: {length: number, ioc: number}[] = [];
+    
+    // Try key lengths from 1 to 20
+    for (let length = 1; length <= 20; length++) {
+      let totalIoC = 0;
+      
+      // Divide text into 'length' columns
+      for (let i = 0; i < length; i++) {
+        // Get characters at position i, i+length, i+2*length, etc.
+        let column = '';
+        for (let j = i; j < text.length; j += length) {
+          column += text[j];
+        }
+        
+        // Calculate IoC for this column
+        totalIoC += calculateColumnIoC(column);
+      }
+      
+      // Average IoC for this key length
+      const avgIoC = totalIoC / length;
+      results.push({ length, ioc: avgIoC });
+    }
+    
+    // Sort by how close IoC is to English text IoC (0.067)
+    results.sort((a, b) => Math.abs(a.ioc - ENGLISH_IOC) - Math.abs(b.ioc - ENGLISH_IOC));
+    setPossibleKeyLengths(results);
+  };
+  
+  // Calculate Index of Coincidence for a single column
+  const calculateColumnIoC = (column: string) => {
+    const frequencies: {[key: string]: number} = {};
+    const length = column.length;
+    
+    // Count occurrences of each letter
+    for (const char of column) {
+      frequencies[char] = (frequencies[char] || 0) + 1;
+    }
+    
+    // Calculate IoC formula: sum(fi * (fi-1)) / (N * (N-1))
+    let sum = 0;
+    for (const char in frequencies) {
+      const count = frequencies[char];
+      sum += count * (count - 1);
+    }
+    
+    return length <= 1 ? 0 : sum / (length * (length - 1));
   };
 
   // Step 2: Apply frequency analysis to find the key
@@ -93,23 +193,16 @@ const VigenereCipher = () => {
     setLoading(true);
     setStep(2);
     
+    // Clean the ciphertext (remove spaces and non-alphabetic characters)
+    const cleanCiphertext = ciphertext.toUpperCase().replace(/[^A-Z]/g, '');
+    
     // Group characters by their position modulo key length
     const groups: string[] = Array(keyLength).fill('');
     
-    for (let i = 0; i < ciphertext.length; i++) {
+    for (let i = 0; i < cleanCiphertext.length; i++) {
       const group = i % keyLength;
-      groups[group] += ciphertext[i].toUpperCase();
+      groups[group] += cleanCiphertext[i];
     }
-    
-    // English letter frequencies
-    const englishFreq = {
-      'A': 0.082, 'B': 0.015, 'C': 0.028, 'D': 0.043, 'E': 0.127, 
-      'F': 0.022, 'G': 0.020, 'H': 0.061, 'I': 0.070, 'J': 0.002, 
-      'K': 0.008, 'L': 0.040, 'M': 0.024, 'N': 0.067, 'O': 0.075, 
-      'P': 0.019, 'Q': 0.001, 'R': 0.060, 'S': 0.063, 'T': 0.091, 
-      'U': 0.028, 'V': 0.010, 'W': 0.023, 'X': 0.001, 'Y': 0.020, 
-      'Z': 0.001
-    };
     
     // For each group, calculate letter frequencies and determine likely shift
     const key: string[] = [];
@@ -145,7 +238,7 @@ const VigenereCipher = () => {
           const englishChar = String.fromCharCode(65 + j);
           const cipherChar = String.fromCharCode(65 + ((j + shift) % 26));
           
-          const expected = englishFreq[englishChar] || 0;
+          const expected = ENGLISH_FREQUENCIES[englishChar as keyof typeof ENGLISH_FREQUENCIES] || 0;
           const observed = frequencies[cipherChar] || 0;
           
           score += Math.pow(observed - expected, 2) / (expected || 0.01);
@@ -168,27 +261,17 @@ const VigenereCipher = () => {
     setRecoveredKey(recoveredKey);
     
     // Decrypt the message with the recovered key
-    const decrypted = decrypt(ciphertext, recoveredKey);
+    const decrypted = decrypt(cleanCiphertext, recoveredKey);
     setDecryptedText(decrypted);
     
     setTimeout(() => {
       setLoading(false);
       setStep(3);
       toast({
-        title: "Frequency Analysis Complete",
+        title: "Analysis Complete",
         description: `Recovered key: ${recoveredKey}`,
       });
     }, 1500);
-  };
-
-  // Helper function to find the GCD of an array of numbers
-  const findGCD = (numbers: number[]): number => {
-    const gcd = (a: number, b: number): number => {
-      if (!b) return a;
-      return gcd(b, a % b);
-    };
-    
-    return numbers.reduce((result, num) => gcd(result, num), numbers[0]);
   };
 
   // Vigenere decrypt function
@@ -214,6 +297,16 @@ const VigenereCipher = () => {
     return result;
   };
   
+  // Helper function to find the GCD of an array of numbers
+  const findGCD = (numbers: number[]): number => {
+    const gcd = (a: number, b: number): number => {
+      if (!b) return a;
+      return gcd(b, a % b);
+    };
+    
+    return numbers.reduce((result, num) => gcd(result, num), numbers[0]);
+  };
+  
   const reset = () => {
     setShowSteps(false);
     setKeyLength(null);
@@ -222,6 +315,7 @@ const VigenereCipher = () => {
     setStep(1);
     setRepeats([]);
     setFrequencies({});
+    setPossibleKeyLengths([]);
   };
 
   return (

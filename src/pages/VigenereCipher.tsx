@@ -1,3 +1,4 @@
+
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,6 +8,14 @@ import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
 import { Shield, ArrowRight, CheckCircle2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 // English letter frequency reference
 const ENGLISH_FREQUENCIES = {
@@ -17,6 +26,14 @@ const ENGLISH_FREQUENCIES = {
   'U': 0.028, 'V': 0.010, 'W': 0.023, 'X': 0.001, 'Y': 0.020, 
   'Z': 0.001
 };
+
+// Sorted English letter frequencies for faster reference
+const SORTED_FREQUENCIES = Object.entries(ENGLISH_FREQUENCIES)
+  .sort((a, b) => b[1] - a[1])
+  .map(([letter]) => letter);
+
+// Most common letters in English
+const COMMON_LETTERS = ['E', 'T', 'A', 'O', 'I', 'N', 'S', 'H', 'R', 'D', 'L', 'U'];
 
 // Average Index of Coincidence for English text is around 0.067
 const ENGLISH_IOC = 0.067;
@@ -33,6 +50,7 @@ const VigenereCipher = () => {
   const [repeats, setRepeats] = useState<{text: string, positions: number[], distance: number}[]>([]);
   const [frequencies, setFrequencies] = useState<{[key: string]: {[key: string]: number}}>({}); 
   const [possibleKeyLengths, setPossibleKeyLengths] = useState<{length: number, ioc: number}[]>([]);
+  const [bestKeys, setBestKeys] = useState<{length: number, key: string, score: number}[]>([]);
 
   // Step 1: Find repeated sequences (Kasiski Examination)
   const findRepeatedSequences = () => {
@@ -41,9 +59,20 @@ const VigenereCipher = () => {
     setShowSteps(true);
     setRepeats([]);
     setPossibleKeyLengths([]);
+    setBestKeys([]);
     
     // Clean the ciphertext (remove spaces and non-alphabetic characters)
     const cleanCiphertext = ciphertext.toUpperCase().replace(/[^A-Z]/g, '');
+    
+    if (cleanCiphertext.length < 20) {
+      toast({
+        title: "Text Too Short",
+        description: "Please provide a longer ciphertext for better analysis.",
+        variant: "destructive"
+      });
+      setLoading(false);
+      return;
+    }
     
     const repeatedSequences: {[key: string]: number[]} = {};
     
@@ -86,21 +115,24 @@ const VigenereCipher = () => {
     setRepeats(topRepeats);
     
     // Calculate Index of Coincidence for different key lengths
-    calculateIoC(cleanCiphertext);
+    const iocResults = calculateIoCForKeyLengths(cleanCiphertext);
+    setPossibleKeyLengths(iocResults);
     
     setTimeout(() => {
       setLoading(false);
-      setStep(2);
       
       // Find potential key length from both methods
       const distances = topRepeats.map(r => r.distance);
       const factorCount: {[key: number]: number} = {};
       
-      // Count common factors of distances
+      // Get all factors of each distance
       for (const distance of distances) {
-        for (let i = 2; i <= 20; i++) {
-          if (distance % i === 0) {
-            factorCount[i] = (factorCount[i] || 0) + 1;
+        if (distance > 1) {  // Skip distances of 1
+          const factors = findFactors(distance);
+          for (const factor of factors) {
+            if (factor >= 2 && factor <= 15) {  // Consider factors between 2 and 15
+              factorCount[factor] = (factorCount[factor] || 0) + 1;
+            }
           }
         }
       }
@@ -109,39 +141,80 @@ const VigenereCipher = () => {
       const kasiskiCandidates = Object.entries(factorCount)
         .map(([factor, count]) => ({
           length: parseInt(factor),
-          count: count
+          score: count
         }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 3)
-        .map(c => c.length);
-      
-      // Get key length candidates from IoC method
-      const iocCandidates = possibleKeyLengths
+        .sort((a, b) => b.score - a.score)
         .slice(0, 5)
         .map(c => c.length);
       
-      // Combine candidates and take the most likely one
-      const allCandidates = [...kasiskiCandidates, ...iocCandidates];
-      const bestKeyLength = allCandidates.length > 0 ? 
-        allCandidates.reduce((a, b) => 
-          allCandidates.filter(v => v === a).length >= allCandidates.filter(v => v === b).length ? a : b
-        ) : 5;  // Default to 5 if no candidates found
+      // Get key length candidates from IoC method
+      const iocCandidates = iocResults
+        .slice(0, 5)
+        .map(c => c.length);
       
-      setKeyLength(bestKeyLength);
+      // Try multiple promising key lengths
+      const candidateLengths = new Set([...kasiskiCandidates, ...iocCandidates]);
+      const candidates = Array.from(candidateLengths).filter(l => l >= 2 && l <= 15).slice(0, 5);
       
-      toast({
-        title: "Analysis Complete",
-        description: `Estimated key length: ${bestKeyLength}`,
-      });
+      // If we couldn't find candidates, try common key lengths
+      if (candidates.length === 0) {
+        candidates.push(5, 6, 7);
+      }
+      
+      // Try multiple key lengths and find the best keys
+      const keyResults: {length: number, key: string, score: number}[] = [];
+      
+      for (const length of candidates) {
+        const result = attemptKeyRecovery(cleanCiphertext, length);
+        keyResults.push({
+          length,
+          key: result.key,
+          score: result.score
+        });
+      }
+      
+      // Sort by score (lower is better)
+      keyResults.sort((a, b) => a.score - b.score);
+      setBestKeys(keyResults);
+      
+      // Select the best key length
+      if (keyResults.length > 0) {
+        const bestLength = keyResults[0].length;
+        setKeyLength(bestLength);
+        
+        // Now perform in-depth analysis with the selected key length
+        setStep(2);
+        handleKeyLengthSelected(cleanCiphertext, bestLength);
+      } else {
+        toast({
+          title: "Analysis Failed",
+          description: "Could not determine key length. Try a different ciphertext.",
+          variant: "destructive"
+        });
+      }
     }, 1500);
+  };
+
+  // Find all factors of a number
+  const findFactors = (num: number): number[] => {
+    const factors: number[] = [];
+    for (let i = 2; i <= Math.sqrt(num); i++) {
+      if (num % i === 0) {
+        factors.push(i);
+        if (i !== num / i) {
+          factors.push(num / i);
+        }
+      }
+    }
+    return factors.sort((a, b) => a - b);
   };
   
   // Calculate Index of Coincidence for different key lengths
-  const calculateIoC = (text: string) => {
+  const calculateIoCForKeyLengths = (text: string) => {
     const results: {length: number, ioc: number}[] = [];
     
-    // Try key lengths from 1 to 20
-    for (let length = 1; length <= 20; length++) {
+    // Try key lengths from 1 to 15
+    for (let length = 1; length <= 15; length++) {
       let totalIoC = 0;
       
       // Divide text into 'length' columns
@@ -163,7 +236,7 @@ const VigenereCipher = () => {
     
     // Sort by how close IoC is to English text IoC (0.067)
     results.sort((a, b) => Math.abs(a.ioc - ENGLISH_IOC) - Math.abs(b.ioc - ENGLISH_IOC));
-    setPossibleKeyLengths(results);
+    return results;
   };
   
   // Calculate Index of Coincidence for a single column
@@ -186,26 +259,88 @@ const VigenereCipher = () => {
     return length <= 1 ? 0 : sum / (length * (length - 1));
   };
 
-  // Step 2: Apply frequency analysis to find the key
-  const performFrequencyAnalysis = () => {
-    if (!keyLength) return;
-    
-    setLoading(true);
-    setStep(2);
-    
-    // Clean the ciphertext (remove spaces and non-alphabetic characters)
-    const cleanCiphertext = ciphertext.toUpperCase().replace(/[^A-Z]/g, '');
-    
-    // Group characters by their position modulo key length
+  // Attempt key recovery for a specific key length
+  const attemptKeyRecovery = (text: string, keyLength: number) => {
+    // Group characters by position modulo key length
     const groups: string[] = Array(keyLength).fill('');
     
+    for (let i = 0; i < text.length; i++) {
+      const groupIndex = i % keyLength;
+      groups[groupIndex] += text[i];
+    }
+    
+    // For each group, find the best shift
+    const key: string[] = [];
+    let totalScore = 0;
+    
+    for (const group of groups) {
+      const { shift, score } = findBestShift(group);
+      key.push(String.fromCharCode(65 + (26 - shift) % 26));
+      totalScore += score;
+    }
+    
+    return {
+      key: key.join(''),
+      score: totalScore / keyLength  // Normalize score by key length
+    };
+  };
+  
+  // Find the best Caesar shift for a given text by comparing to English frequencies
+  const findBestShift = (text: string) => {
+    // Get letter frequencies in the text
+    const freqs: number[] = Array(26).fill(0);
+    
+    for (let i = 0; i < text.length; i++) {
+      const charCode = text.charCodeAt(i) - 65;
+      if (charCode >= 0 && charCode < 26) {
+        freqs[charCode]++;
+      }
+    }
+    
+    // Convert to probabilities
+    for (let i = 0; i < 26; i++) {
+      freqs[i] = freqs[i] / text.length;
+    }
+    
+    // Try each shift and measure the correlation with English letter frequencies
+    let bestShift = 0;
+    let bestScore = -Infinity;
+    
+    for (let shift = 0; shift < 26; shift++) {
+      let correlation = 0;
+      
+      for (let i = 0; i < 26; i++) {
+        const englishChar = String.fromCharCode(65 + i);
+        const cipherIndex = (i + shift) % 26;
+        
+        const englishFreq = ENGLISH_FREQUENCIES[englishChar as keyof typeof ENGLISH_FREQUENCIES];
+        const cipherFreq = freqs[cipherIndex];
+        
+        correlation += englishFreq * cipherFreq;
+      }
+      
+      if (correlation > bestScore) {
+        bestScore = correlation;
+        bestShift = shift;
+      }
+    }
+    
+    return { shift: bestShift, score: bestScore };
+  };
+
+  // Handle selection of a key length
+  const handleKeyLengthSelected = (cleanCiphertext: string, length: number) => {
+    setLoading(true);
+    
+    // Group characters by their position modulo key length
+    const groups: string[] = Array(length).fill('');
+    
     for (let i = 0; i < cleanCiphertext.length; i++) {
-      const group = i % keyLength;
+      const group = i % length;
       groups[group] += cleanCiphertext[i];
     }
     
-    // For each group, calculate letter frequencies and determine likely shift
-    const key: string[] = [];
+    // For each group, calculate letter frequencies
     const groupAnalysis: {[key: string]: {[key: string]: number}} = {};
     
     for (let i = 0; i < groups.length; i++) {
@@ -226,42 +361,16 @@ const VigenereCipher = () => {
       }
       
       groupAnalysis[`Group ${i+1}`] = frequencies;
-      
-      // Try each possible shift and calculate chi-squared statistic
-      let bestShift = 0;
-      let bestScore = Infinity;
-      
-      for (let shift = 0; shift < 26; shift++) {
-        let score = 0;
-        
-        for (let j = 0; j < 26; j++) {
-          const englishChar = String.fromCharCode(65 + j);
-          const cipherChar = String.fromCharCode(65 + ((j + shift) % 26));
-          
-          const expected = ENGLISH_FREQUENCIES[englishChar as keyof typeof ENGLISH_FREQUENCIES] || 0;
-          const observed = frequencies[cipherChar] || 0;
-          
-          score += Math.pow(observed - expected, 2) / (expected || 0.01);
-        }
-        
-        if (score < bestScore) {
-          bestScore = score;
-          bestShift = shift;
-        }
-      }
-      
-      // Convert shift to key character
-      const keyChar = String.fromCharCode(65 + (26 - bestShift) % 26);
-      key.push(keyChar);
     }
     
     setFrequencies(groupAnalysis);
     
-    const recoveredKey = key.join('');
-    setRecoveredKey(recoveredKey);
+    // Get the best key
+    const bestKey = bestKeys.find(k => k.length === length)?.key || '';
+    setRecoveredKey(bestKey);
     
-    // Decrypt the message with the recovered key
-    const decrypted = decrypt(cleanCiphertext, recoveredKey);
+    // Decrypt with the recovered key
+    const decrypted = decrypt(cleanCiphertext, bestKey);
     setDecryptedText(decrypted);
     
     setTimeout(() => {
@@ -269,9 +378,9 @@ const VigenereCipher = () => {
       setStep(3);
       toast({
         title: "Analysis Complete",
-        description: `Recovered key: ${recoveredKey}`,
+        description: `Recovered key: ${bestKey}`,
       });
-    }, 1500);
+    }, 1000);
   };
 
   // Vigenere decrypt function
@@ -297,14 +406,13 @@ const VigenereCipher = () => {
     return result;
   };
   
-  // Helper function to find the GCD of an array of numbers
-  const findGCD = (numbers: number[]): number => {
-    const gcd = (a: number, b: number): number => {
-      if (!b) return a;
-      return gcd(b, a % b);
-    };
+  // Step 2: Apply frequency analysis to find the key
+  const performFrequencyAnalysis = () => {
+    if (!keyLength) return;
     
-    return numbers.reduce((result, num) => gcd(result, num), numbers[0]);
+    // Clean the ciphertext
+    const cleanCiphertext = ciphertext.toUpperCase().replace(/[^A-Z]/g, '');
+    handleKeyLengthSelected(cleanCiphertext, keyLength);
   };
   
   const reset = () => {
@@ -316,6 +424,7 @@ const VigenereCipher = () => {
     setRepeats([]);
     setFrequencies({});
     setPossibleKeyLengths([]);
+    setBestKeys([]);
   };
 
   return (
@@ -386,15 +495,39 @@ const VigenereCipher = () => {
                     <div className="font-medium">Estimated Key Length:</div>
                     <div className="text-xl">{keyLength}</div>
                     
-                    {step >= 2 && keyLength > 0 && (
+                    {step === 2 && keyLength > 0 && (
                       <Button
                         className="mt-2"
                         onClick={performFrequencyAnalysis}
                         disabled={loading}
                       >
-                        {loading && step === 2 ? "Analyzing Frequencies..." : "Perform Frequency Analysis"}
+                        {loading ? "Analyzing Frequencies..." : "Perform Frequency Analysis"}
                       </Button>
                     )}
+                  </div>
+                )}
+                
+                {bestKeys.length > 0 && (
+                  <div className="mt-4">
+                    <div className="font-medium">Possible Keys (by score):</div>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Key</TableHead>
+                          <TableHead>Length</TableHead>
+                          <TableHead>Score</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {bestKeys.slice(0, 3).map((k, i) => (
+                          <TableRow key={i} className={i === 0 ? "bg-green-50" : ""}>
+                            <TableCell className="font-mono">{k.key}</TableCell>
+                            <TableCell>{k.length}</TableCell>
+                            <TableCell>{k.score.toFixed(4)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
                   </div>
                 )}
                 
@@ -410,7 +543,7 @@ const VigenereCipher = () => {
                 {decryptedText && (
                   <div className="mt-4">
                     <div className="font-medium">Decrypted Text:</div>
-                    <div className="bg-gray-50 p-3 rounded border text-sm font-mono">
+                    <div className="bg-gray-50 p-3 rounded border text-sm font-mono overflow-auto max-h-48">
                       {decryptedText}
                     </div>
                   </div>
@@ -438,29 +571,40 @@ const VigenereCipher = () => {
                   <div className="space-y-4">
                     <p>Identified repeated sequences:</p>
                     <div className="overflow-x-auto">
-                      <table className="min-w-full divide-y divide-gray-200">
-                        <thead>
-                          <tr>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Sequence</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Positions</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Distance</th>
-                          </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Sequence</TableHead>
+                            <TableHead>Positions</TableHead>
+                            <TableHead>Distance</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
                           {repeats.map((repeat, index) => (
-                            <tr key={index}>
-                              <td className="px-6 py-4 whitespace-nowrap font-mono">{repeat.text}</td>
-                              <td className="px-6 py-4 whitespace-nowrap">{repeat.positions.join(', ')}</td>
-                              <td className="px-6 py-4 whitespace-nowrap">{repeat.distance}</td>
-                            </tr>
+                            <TableRow key={index}>
+                              <TableCell className="font-mono">{repeat.text}</TableCell>
+                              <TableCell>{repeat.positions.join(', ')}</TableCell>
+                              <TableCell>{repeat.distance}</TableCell>
+                            </TableRow>
                           ))}
-                        </tbody>
-                      </table>
+                        </TableBody>
+                      </Table>
                     </div>
                     <div className="mt-4">
-                      <p className="text-sm text-gray-600">
-                        The key length is likely a factor of the distances between repeated sequences.
-                        Based on the greatest common divisor (GCD) of these distances, the estimated key length is <strong>{keyLength}</strong>.
+                      <p className="font-medium">Index of Coincidence Analysis:</p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 mt-2">
+                        {possibleKeyLengths.slice(0, 6).map((item, index) => (
+                          <div 
+                            key={index} 
+                            className={`p-2 border rounded ${item.length === keyLength ? 'bg-green-50 border-green-300' : ''}`}
+                          >
+                            Length {item.length}: IoC = {item.ioc.toFixed(4)}
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-sm text-gray-600 mt-3">
+                        The key length is likely a factor of the distances between repeated sequences,
+                        or a length with IoC close to English text (0.067).
                       </p>
                     </div>
                   </div>
@@ -503,7 +647,7 @@ const VigenereCipher = () => {
                                 ))}
                             </div>
                             <div className="mt-2 text-sm">
-                              Key character: <span className="font-bold">{recoveredKey[index]}</span>
+                              Key character: <span className="font-bold">{recoveredKey[index] || '?'}</span>
                             </div>
                           </div>
                         ))}

@@ -6,6 +6,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
+import VigenereCipher from "./pages/VigenereCipher";
+import DES from "./pages/DES";
+import MillerRabin from "./pages/MillerRabin";
 
 const queryClient = new QueryClient();
 
@@ -17,10 +20,9 @@ const App = () => (
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Index />} />
-          {/* The following routes will be implemented later */}
-          <Route path="/vigenere" element={<div className="p-8">Vigenère Cipher attack page coming soon</div>} />
-          <Route path="/des" element={<div className="p-8">DES attack page coming soon</div>} />
-          <Route path="/miller-rabin" element={<div className="p-8">Miller-Rabin test page coming soon</div>} />
+          <Route path="/vigenere" element={<VigenereCipher />} />
+          <Route path="/des" element={<DES />} />
+          <Route path="/miller-rabin" element={<MillerRabin />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
